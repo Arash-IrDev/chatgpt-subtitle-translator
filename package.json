@@ -6,7 +6,12 @@
   "type": "module",
   "scripts": {
     "typecheck": "npx tsc --noEmit -p jsconfig.json",
-    "test": "node --test"
+    "test": "node --test",
+    "web:install": "npm install --prefix web",
+    "web:dev": "npm run dev --prefix web",
+    "web:build": "npm run build --prefix web",
+    "web:serve": "npm run serve --prefix web",
+    "web:build:pages": "npm run build:pages --prefix web"
   },
   "author": "Cerlancism",
   "license": "MIT",

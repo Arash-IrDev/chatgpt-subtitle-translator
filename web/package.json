@@ -3,14 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3000",
     "build": "next build",
-    "start": "next start",
+    "build:pages": "GITHUB_PAGES=true next build",
+    "serve": "npx --yes serve@14 out -l 3000",
+    "serve:pages": "npx --yes serve@14 chatgpt-subtitle-translator -l 3000",
     "lint": "next lint"
   },
   "dependencies": {
     "@nextui-org/react": "2.2.10",
-    "chatgpt-subtitle-translator": "github:Cerlancism/chatgpt-subtitle-translator#e62fa00c3440ac9455542090695900f35bffd475",
+    "chatgpt-subtitle-translator": "file:..",
     "next": "14.2.35",
     "react": "^18",
     "react-dom": "^18"

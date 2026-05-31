@@ -1,14 +1,23 @@
 "use client"
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Input, Card, Textarea, Slider, Switch, CardHeader, CardBody, Divider } from "@nextui-org/react";
 
 import { EyeSlashFilledIcon } from './EyeSlashFilledIcon';
 import { EyeFilledIcon } from './EyeFilledIcon';
+import { ModelSelect } from './ModelSelect';
 
 import { FileUploadButton } from '@/components/FileUploadButton';
 import { SubtitleCard } from '@/components/SubtitleCard';
 import { downloadString } from '@/utils/download';
 import { sampleSrt } from '@/data/sample';
+import {
+  listOllamaModels,
+  pickOllamaModel,
+  ensureOllamaModel,
+  OLLAMA_OPENAI_BASE_URL,
+  OLLAMA_API_KEY_PLACEHOLDER,
+  PREFERRED_OLLAMA_MODEL,
+} from '@/lib/ollama';
 
 import { Translator, TranslatorStructuredArray, subtitleParser, createOpenAIClient, CooldownContext } from "chatgpt-subtitle-translator"
 
@@ -16,27 +25,33 @@ const OPENAI_API_KEY = "OPENAI_API_KEY"
 const OPENAI_BASE_URL = "OPENAI_BASE_URL"
 const RATE_LIMIT = "RATE_LIMIT"
 const MODEL = "MODEL"
+const USE_CLOUD_API = "USE_CLOUD_API"
 
-const DefaultModel = "gpt-4o-mini"
+const CloudDefaultModel = "gpt-4o-mini"
 const DefaultTemperature = 0
 
+/** @typedef {'idle' | 'loading' | 'ready' | 'empty' | 'offline'} OllamaStatus */
+
 export function TranslatorApplication() {
-  // Translator Configuration
+  const [useCloudApi, setUseCloudApiState] = useState(false)
   const [APIvalue, setAPIValue] = useState("")
-  const [baseUrlValue, setBaseUrlValue] = useState(undefined)
+  const [baseUrlValue, setBaseUrlValue] = useState(OLLAMA_OPENAI_BASE_URL)
   const [fromLanguage, setFromLanguage] = useState("")
   const [toLanguage, setToLanguage] = useState("English")
   const [systemInstruction, setSystemInstruction] = useState("")
-  const [model, setModel] = useState(DefaultModel)
+  const [model, setModel] = useState('')
   const [temperature, setTemperature] = useState(DefaultTemperature)
   const [batchSizes, setBatchSizes] = useState([10, 50])
-  const [useStructuredMode, setUseStructuredMode] = useState(true)
+  const [useStructuredMode, setUseStructuredMode] = useState(false)
   const [rateLimit, setRateLimit] = useState(60)
+
+  const [ollamaModels, setOllamaModels] = useState(/** @type {string[]} */ ([]))
+  const [ollamaStatus, setOllamaStatus] = useState(/** @type {OllamaStatus} */ ('idle'))
+  const [ollamaError, setOllamaError] = useState(/** @type {string | null} */ (null))
 
   const [isAPIInputVisible, setIsAPIInputVisible] = useState(false)
   const toggleAPIInputVisibility = () => setIsAPIInputVisible(!isAPIInputVisible)
 
-  // Translator State
   const [srtInputText, setSrtInputText] = useState(sampleSrt)
   const [srtOutputText, setSrtOutputText] = useState(sampleSrt)
   const [inputs, setInputs] = useState(subtitleParser.fromSrt(sampleSrt).map(x => x.text))
@@ -47,17 +62,10 @@ export function TranslatorApplication() {
   const translatorRef = useRef(null)
   const translatorRunningRef = useRef(false)
 
-  // Translator Stats
   const [usageInformation, setUsageInformation] = useState(/** @type {typeof Translator.prototype.usage}*/(null))
   const [RPMInfomation, setRPMInformation] = useState(0)
 
-  // Persistent Data Restoration
-  useEffect(() => {
-    setAPIValue(localStorage.getItem(OPENAI_API_KEY) ?? "")
-    setRateLimit(Number(localStorage.getItem(RATE_LIMIT) ?? rateLimit))
-    setBaseUrlWithModerator(localStorage.getItem(OPENAI_BASE_URL) ?? undefined)
-    setModelValue(localStorage.getItem(MODEL) ?? DefaultModel)
-  }, [])
+  const initDoneRef = useRef(false)
 
   function setAPIKey(value) {
     localStorage.setItem(OPENAI_API_KEY, value)
@@ -66,22 +74,25 @@ export function TranslatorApplication() {
 
   function setBaseUrl(value) {
     if (!value) {
-      value = undefined
       localStorage.removeItem(OPENAI_BASE_URL)
+      setBaseUrlValue(undefined)
+      return
     }
-    if (value) {
-      localStorage.setItem(OPENAI_BASE_URL, value)
-    }
-    setBaseUrlWithModerator(value)
+    localStorage.setItem(OPENAI_BASE_URL, value)
+    setBaseUrlValue(value)
   }
 
-  function setBaseUrlWithModerator(value) {
-    if (!baseUrlValue && value) {
-      if (useStructuredMode) {
-        setUseStructuredMode(false)
-      }
+  /**
+   * @param {string | undefined} value
+   */
+  function setModelValue(value) {
+    if (!value) {
+      localStorage.removeItem(MODEL)
+      setModel('')
+      return
     }
-    setBaseUrlValue(value)
+    localStorage.setItem(MODEL, value)
+    setModel(value)
   }
 
   /**
@@ -92,34 +103,106 @@ export function TranslatorApplication() {
     setRateLimit(Number(value))
   }
 
-  /**
-   * @param {string | undefined} value
-   */
-  function setModelValue(value) {
-    if (!value) {
-      localStorage.removeItem(MODEL)
+  const refreshOllamaModels = useCallback(async () => {
+    setOllamaStatus('loading')
+    setOllamaError(null)
+    try {
+      const names = await listOllamaModels()
+      setOllamaModels(names)
+      if (names.length === 0) {
+        setOllamaStatus('empty')
+        setModelValue('')
+        return
+      }
+      setOllamaStatus('ready')
+      const saved = localStorage.getItem(MODEL)
+      const picked = pickOllamaModel(names, PREFERRED_OLLAMA_MODEL, saved ?? model)
+      if (picked) {
+        setModelValue(picked)
+      }
+    } catch (error) {
+      setOllamaModels([])
+      setOllamaStatus('offline')
+      setOllamaError(error instanceof Error ? error.message : String(error))
     }
-    else {
-      localStorage.setItem(MODEL, value)
+  }, [])
+
+  const applyLocalDefaults = useCallback(() => {
+    setAPIKey(OLLAMA_API_KEY_PLACEHOLDER)
+    setBaseUrl(OLLAMA_OPENAI_BASE_URL)
+    setUseStructuredMode(false)
+  }, [])
+
+  const setUseCloudApi = useCallback((value) => {
+    localStorage.setItem(USE_CLOUD_API, value ? 'true' : 'false')
+    setUseCloudApiState(value)
+    if (value) {
+      setAPIValue(localStorage.getItem(OPENAI_API_KEY) ?? '')
+      const savedBase = localStorage.getItem(OPENAI_BASE_URL)
+      setBaseUrlValue(savedBase || undefined)
+      setModelValue(localStorage.getItem(MODEL) ?? CloudDefaultModel)
+      setUseStructuredMode(true)
+    } else {
+      applyLocalDefaults()
+      refreshOllamaModels()
     }
-    setModel(value)
-  }
+  }, [applyLocalDefaults, refreshOllamaModels])
+
+  useEffect(() => {
+    if (initDoneRef.current) {
+      return
+    }
+    initDoneRef.current = true
+
+    const cloud = localStorage.getItem(USE_CLOUD_API) === 'true'
+    setRateLimit(Number(localStorage.getItem(RATE_LIMIT) ?? 60))
+    setUseCloudApiState(cloud)
+
+    if (cloud) {
+      setAPIValue(localStorage.getItem(OPENAI_API_KEY) ?? '')
+      const savedBase = localStorage.getItem(OPENAI_BASE_URL)
+      setBaseUrlValue(savedBase || undefined)
+      setModelValue(localStorage.getItem(MODEL) ?? CloudDefaultModel)
+      setUseStructuredMode(true)
+    } else {
+      applyLocalDefaults()
+      refreshOllamaModels()
+    }
+  }, [applyLocalDefaults, refreshOllamaModels])
+
+  const canStart = useCloudApi
+    ? Boolean(APIvalue?.trim())
+    : ollamaStatus === 'ready' && Boolean(model) && ollamaModels.includes(model)
 
   async function generate(e) {
     e.preventDefault()
+
+    let effectiveModel = model
+    if (!useCloudApi) {
+      const resolved = ensureOllamaModel(ollamaModels, model, PREFERRED_OLLAMA_MODEL)
+      if (!resolved) {
+        alert('No Ollama models are installed. Run `ollama pull gemma4` or choose another model.')
+        return
+      }
+      if (resolved !== model) {
+        setModelValue(resolved)
+      }
+      effectiveModel = resolved
+    }
+
     setTranslatorRunningState(true)
-    console.log("[User Interface]", "Begin Generation")
     translatorRunningRef.current = true
     setOutput([])
     setUsageInformation(null)
     let currentStream = ""
     const outputWorkingProgress = subtitleParser.fromSrt(srtInputText)
     const currentOutputs = []
-    console.log("OPENAI_BASE_URL", baseUrlValue)
-    const openai = createOpenAIClient(APIvalue, true, baseUrlValue)
+
+    const apiKey = useCloudApi ? APIvalue : OLLAMA_API_KEY_PLACEHOLDER
+    const baseUrl = useCloudApi ? baseUrlValue : OLLAMA_OPENAI_BASE_URL
+    const openai = createOpenAIClient(apiKey, true, baseUrl)
 
     const coolerChatGPTAPI = new CooldownContext(rateLimit, 60000, "ChatGPTAPI")
-
     const TranslatorImplementation = useStructuredMode ? TranslatorStructuredArray : Translator
 
     translatorRef.current = new TranslatorImplementation({ from: fromLanguage, to: toLanguage }, {
@@ -153,9 +236,9 @@ export function TranslatorApplication() {
       }
     }, {
       useModerator: false,
-      batchSizes: batchSizes, //[10, 50],
+      batchSizes: batchSizes,
       createChatCompletionRequest: {
-        model: model,
+        model: effectiveModel,
         temperature: temperature,
         stream: true
       },
@@ -169,7 +252,6 @@ export function TranslatorApplication() {
       setStreamOutput("")
       for await (const output of translatorRef.current.translateLines(inputs)) {
         if (!translatorRunningRef.current) {
-          console.error("[User Interface]", "Aborted")
           break
         }
         currentOutputs.push(output.finalTransform)
@@ -179,7 +261,6 @@ export function TranslatorApplication() {
         setUsageInformation(translatorRef.current.usage)
         setRPMInformation(translatorRef.current.services.cooler?.rate)
       }
-      console.log({ sourceInputWorkingCopy: outputWorkingProgress })
       setSrtOutputText(subtitleParser.toSrt(outputWorkingProgress))
     } catch (error) {
       console.error(error)
@@ -191,7 +272,6 @@ export function TranslatorApplication() {
   }
 
   async function stopGeneration() {
-    console.error("[User Interface]", "Aborting")
     if (translatorRef.current) {
       translatorRunningRef.current = false
       translatorRef.current.abort()
@@ -205,46 +285,81 @@ export function TranslatorApplication() {
           <div className='px-4 pt-4 flex flex-wrap justify-between w-full gap-4'>
             <Card className="z-10 w-full shadow-md border" shadow="none">
               <CardHeader className="flex gap-3 pb-0">
-                <div className="flex flex-col">
+                <div className="flex flex-col flex-1">
                   <p className="text-md">Configuration</p>
+                  <p className="text-tiny text-default-500">
+                    Local-first: Ollama on {OLLAMA_OPENAI_BASE_URL} (default model {PREFERRED_OLLAMA_MODEL})
+                  </p>
                 </div>
+                <Switch
+                  size="sm"
+                  isSelected={useCloudApi}
+                  onValueChange={setUseCloudApi}
+                >
+                  Cloud API (OpenAI)
+                </Switch>
               </CardHeader>
               <CardBody>
                 <div className='flex flex-wrap justify-between w-full gap-4'>
-                  <div className='flex flex-wrap md:flex-nowrap w-full gap-4'>
-                    <Input
-                      className="w-full md:w-6/12"
-                      size='sm'
-                      // autoFocus={true}
-                      value={APIvalue}
-                      onValueChange={(value) => setAPIKey(value)}
-                      isRequired
-                      autoComplete='off'
-                      label="OpenAI API Key"
-                      variant="flat"
-                      description="API Key is stored locally in browser"
-                      endContent={
-                        <button className="focus:outline-none" type="button" onClick={toggleAPIInputVisibility}>
-                          {isAPIInputVisible ? (
-                            <EyeSlashFilledIcon className="text-2xl text-default-400 pointer-events-none" />
-                          ) : (
-                            <EyeFilledIcon className="text-2xl text-default-400 pointer-events-none" />
-                          )}
-                        </button>
-                      }
-                      type={isAPIInputVisible ? "text" : "password"}
-                    />
-                    <Input
-                      className='w-full md:w-6/12'
-                      size='sm'
-                      type="text"
-                      label="OpenAI Base Url"
-                      placeholder="https://api.openai.com/v1"
-                      autoComplete='on'
-                      value={baseUrlValue ?? ""}
-                      onValueChange={setBaseUrl}
-                    />
-                  </div>
+                  {!useCloudApi && (
+                    <div className="w-full">
+                      {ollamaStatus === 'offline' && (
+                        <p className="text-small text-warning mb-2">
+                          Ollama is not reachable. Start Ollama (`ollama serve`) and pull a model, then click Refresh.
+                          {ollamaError ? ` (${ollamaError})` : ''}
+                        </p>
+                      )}
+                      {ollamaStatus === 'empty' && (
+                        <p className="text-small text-warning mb-2">
+                          No models found. Install one, e.g. `ollama pull gemma4`, then Refresh.
+                        </p>
+                      )}
+                      <ModelSelect
+                        models={ollamaModels}
+                        model={model}
+                        onModelChange={setModelValue}
+                        onRefresh={refreshOllamaModels}
+                        isLoading={ollamaStatus === 'loading'}
+                        isDisabled={translatorRunningState}
+                      />
+                    </div>
+                  )}
+
+                  {useCloudApi && (
+                    <div className='flex flex-wrap md:flex-nowrap w-full gap-4'>
+                      <Input
+                        className="w-full md:w-6/12"
+                        size='sm'
+                        value={APIvalue}
+                        onValueChange={(value) => setAPIKey(value)}
+                        isRequired
+                        autoComplete='off'
+                        label="OpenAI API Key"
+                        variant="flat"
+                        description="Stored locally in your browser"
+                        endContent={
+                          <button className="focus:outline-none" type="button" onClick={toggleAPIInputVisibility}>
+                            {isAPIInputVisible ? (
+                              <EyeSlashFilledIcon className="text-2xl text-default-400 pointer-events-none" />
+                            ) : (
+                              <EyeFilledIcon className="text-2xl text-default-400 pointer-events-none" />
+                            )}
+                          </button>
+                        }
+                        type={isAPIInputVisible ? "text" : "password"}
+                      />
+                      <Input
+                        className='w-full md:w-6/12'
+                        size='sm'
+                        type="text"
+                        label="API base URL (optional)"
+                        placeholder="https://api.openai.com/v1"
+                        autoComplete='on'
+                        value={baseUrlValue ?? ""}
+                        onValueChange={(value) => setBaseUrl(value || undefined)}
+                      />
+                    </div>
+                  )}
 
                   <div className='flex w-full gap-4'>
                     <Input
@@ -280,32 +395,35 @@ export function TranslatorApplication() {
                   </div>
 
                   <div className='flex flex-wrap md:flex-nowrap w-full gap-4'>
-                    <div className='w-full md:w-1/5'>
-                      <Input
-                        size='sm'
-                        type="text"
-                        label="Model"
-                        placeholder={DefaultModel}
-                        autoComplete='on'
-                        value={model}
-                        onValueChange={setModelValue}
-                      />
-                    </div>
+                    {useCloudApi && (
+                      <div className='w-full md:w-1/5'>
+                        <Input
+                          size='sm'
+                          type="text"
+                          label="Model"
+                          placeholder={CloudDefaultModel}
+                          autoComplete='on'
+                          value={model}
+                          onValueChange={setModelValue}
+                        />
+                      </div>
+                    )}
 
                     <div className='w-full md:w-1/5 flex'>
                       <Switch
                         size='sm'
                         isSelected={useStructuredMode}
                         onValueChange={setUseStructuredMode}
+                        isDisabled={!useCloudApi}
                       >
                       </Switch>
                       <div className="flex flex-col place-content-center gap-1">
-                        <p className="text-small">Use Structured Mode</p>
-                        {baseUrlValue && (
-                          <p className="text-tiny text-default-400">
-                            Base URL is set, disable structured mode for compatibility.
-                          </p>
-                        )}
+                        <p className="text-small">Structured mode</p>
+                        <p className="text-tiny text-default-400">
+                          {useCloudApi
+                            ? 'Recommended for OpenAI models'
+                            : 'Disabled for local Ollama (use plain mode)'}
+                        </p>
                       </div>
                     </div>
 
@@ -359,7 +477,6 @@ export function TranslatorApplication() {
 
         <div className='w-full justify-between md:justify-center flex flex-wrap gap-1 sm:gap-4 mt-auto sticky top-0 backdrop-blur px-4 pt-4'>
           <FileUploadButton label={"Import SRT"} onFileSelect={async (file) => {
-            // console.log("File", file);
             try {
               const text = await file.text()
               const parsed = subtitleParser.fromSrt(text)
@@ -370,7 +487,7 @@ export function TranslatorApplication() {
             }
           }} />
           {!translatorRunningState && (
-            <Button type='submit' form="translator-config-form" color="primary" isDisabled={!APIvalue || translatorRunningState}>
+            <Button type='submit' form="translator-config-form" color="primary" isDisabled={!canStart || translatorRunningState}>
               Start
             </Button>
           )}
@@ -382,7 +499,6 @@ export function TranslatorApplication() {
           )}
 
           <Button color="primary" onClick={() => {
-            // console.log(srtOutputText)
             downloadString(srtOutputText, "text/plain", "export.srt")
           }}>
             Export SRT

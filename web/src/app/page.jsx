@@ -1,6 +1,7 @@
 import { TranslatorApplication } from '@/components/TranslatorApplication';
-import { basePath } from '@/../next.config';
 import { Link } from '@nextui-org/react';
+
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 
 export default function Home() {
   return (
