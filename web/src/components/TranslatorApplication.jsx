@@ -16,7 +16,6 @@ import {
   LOCAL_RATE_LIMIT_RPM,
   DEFAULT_TARGET_LANGUAGE,
 } from '@/lib/constants';
-import { buildDefaultSystemInstruction } from '@/lib/defaultPrompt';
 import {
   listOllamaModels,
   pickOllamaModel,
@@ -259,9 +258,9 @@ export function TranslatorApplication() {
       },
     })
 
-    translatorRef.current.systemInstruction = systemInstruction.trim()
-      ? systemInstruction.trim()
-      : buildDefaultSystemInstruction({ from: fromLanguage, to: toLanguage })
+    if (systemInstruction.trim()) {
+      translatorRef.current.systemInstruction = systemInstruction.trim()
+    }
 
     try {
       setStreamOutput("")
@@ -402,10 +401,10 @@ export function TranslatorApplication() {
 
                   <div className='w-full'>
                     <Textarea
-                      label="System instruction (optional)"
-                      minRows={3}
-                      description="Leave empty for the built-in learning-focused subtitle prompt"
-                      placeholder="Custom instructions override the default"
+                      label="System Instruction"
+                      minRows={2}
+                      description="Override preset system instruction"
+                      placeholder={`Translate ${fromLanguage ? fromLanguage + " " : ""}to ${toLanguage}`}
                       value={systemInstruction}
                       onValueChange={setSystemInstruction}
                     />
