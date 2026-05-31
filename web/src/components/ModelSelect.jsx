@@ -23,7 +23,7 @@ export function ModelSelect({
   return (
     <div className="flex w-full gap-2 items-end">
       <Select
-        className="flex-1"
+        className="flex-1 min-w-0"
         size="sm"
         label="Ollama model"
         placeholder={isLoading ? 'Loading models…' : 'No models installed'}
@@ -48,6 +48,7 @@ export function ModelSelect({
         size="sm"
         variant="flat"
         type="button"
+        className="h-10 shrink-0 min-w-[5.5rem]"
         onPress={onRefresh}
         isLoading={isLoading}
         isDisabled={isDisabled}

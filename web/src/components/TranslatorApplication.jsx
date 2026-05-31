@@ -5,11 +5,18 @@ import { Button, Input, Card, Textarea, Slider, Switch, CardHeader, CardBody, Di
 import { EyeSlashFilledIcon } from './EyeSlashFilledIcon';
 import { EyeFilledIcon } from './EyeFilledIcon';
 import { ModelSelect } from './ModelSelect';
+import { LanguageCombobox } from './LanguageCombobox';
 
 import { FileUploadButton } from '@/components/FileUploadButton';
 import { SubtitleCard } from '@/components/SubtitleCard';
 import { downloadString } from '@/utils/download';
 import { sampleSrt } from '@/data/sample';
+import {
+  CLOUD_RATE_LIMIT_RPM,
+  LOCAL_RATE_LIMIT_RPM,
+  DEFAULT_TARGET_LANGUAGE,
+} from '@/lib/constants';
+import { buildDefaultSystemInstruction } from '@/lib/defaultPrompt';
 import {
   listOllamaModels,
   pickOllamaModel,
@@ -26,6 +33,7 @@ const OPENAI_BASE_URL = "OPENAI_BASE_URL"
 const RATE_LIMIT = "RATE_LIMIT"
 const MODEL = "MODEL"
 const USE_CLOUD_API = "USE_CLOUD_API"
+const TO_LANGUAGE = "TO_LANGUAGE"
 
 const CloudDefaultModel = "gpt-4o-mini"
 const DefaultTemperature = 0
@@ -37,13 +45,13 @@ export function TranslatorApplication() {
   const [APIvalue, setAPIValue] = useState("")
   const [baseUrlValue, setBaseUrlValue] = useState(OLLAMA_OPENAI_BASE_URL)
   const [fromLanguage, setFromLanguage] = useState("")
-  const [toLanguage, setToLanguage] = useState("English")
+  const [toLanguage, setToLanguage] = useState(DEFAULT_TARGET_LANGUAGE)
   const [systemInstruction, setSystemInstruction] = useState("")
   const [model, setModel] = useState('')
   const [temperature, setTemperature] = useState(DefaultTemperature)
   const [batchSizes, setBatchSizes] = useState([10, 50])
-  const [useStructuredMode, setUseStructuredMode] = useState(false)
-  const [rateLimit, setRateLimit] = useState(60)
+  const [useStructuredMode, setUseStructuredMode] = useState(true)
+  const [rateLimit, setRateLimit] = useState(CLOUD_RATE_LIMIT_RPM)
 
   const [ollamaModels, setOllamaModels] = useState(/** @type {string[]} */ ([]))
   const [ollamaStatus, setOllamaStatus] = useState(/** @type {OllamaStatus} */ ('idle'))
@@ -53,7 +61,7 @@ export function TranslatorApplication() {
   const toggleAPIInputVisibility = () => setIsAPIInputVisible(!isAPIInputVisible)
 
   const [srtInputText, setSrtInputText] = useState(sampleSrt)
-  const [srtOutputText, setSrtOutputText] = useState(sampleSrt)
+  const [srtOutputText, setSrtOutputText] = useState('')
   const [inputs, setInputs] = useState(subtitleParser.fromSrt(sampleSrt).map(x => x.text))
   const [outputs, setOutput] = useState([])
   const [streamOutput, setStreamOutput] = useState("")
@@ -103,6 +111,11 @@ export function TranslatorApplication() {
     setRateLimit(Number(value))
   }
 
+  function setToLanguageValue(value) {
+    localStorage.setItem(TO_LANGUAGE, value)
+    setToLanguage(value)
+  }
+
   const refreshOllamaModels = useCallback(async () => {
     setOllamaStatus('loading')
     setOllamaError(null)
@@ -130,7 +143,7 @@ export function TranslatorApplication() {
   const applyLocalDefaults = useCallback(() => {
     setAPIKey(OLLAMA_API_KEY_PLACEHOLDER)
     setBaseUrl(OLLAMA_OPENAI_BASE_URL)
-    setUseStructuredMode(false)
+    setUseStructuredMode(true)
   }, [])
 
   const setUseCloudApi = useCallback((value) => {
@@ -155,7 +168,8 @@ export function TranslatorApplication() {
     initDoneRef.current = true
 
     const cloud = localStorage.getItem(USE_CLOUD_API) === 'true'
-    setRateLimit(Number(localStorage.getItem(RATE_LIMIT) ?? 60))
+    setRateLimit(Number(localStorage.getItem(RATE_LIMIT) ?? CLOUD_RATE_LIMIT_RPM))
+    setToLanguage(localStorage.getItem(TO_LANGUAGE) ?? DEFAULT_TARGET_LANGUAGE)
     setUseCloudApiState(cloud)
 
     if (cloud) {
@@ -202,7 +216,8 @@ export function TranslatorApplication() {
     const baseUrl = useCloudApi ? baseUrlValue : OLLAMA_OPENAI_BASE_URL
     const openai = createOpenAIClient(apiKey, true, baseUrl)
 
-    const coolerChatGPTAPI = new CooldownContext(rateLimit, 60000, "ChatGPTAPI")
+    const effectiveRateLimit = useCloudApi ? rateLimit : LOCAL_RATE_LIMIT_RPM
+    const coolerChatGPTAPI = new CooldownContext(effectiveRateLimit, 60000, "ChatGPTAPI")
     const TranslatorImplementation = useStructuredMode ? TranslatorStructuredArray : Translator
 
     translatorRef.current = new TranslatorImplementation({ from: fromLanguage, to: toLanguage }, {
@@ -244,9 +259,9 @@ export function TranslatorApplication() {
       },
     })
 
-    if (systemInstruction) {
-      translatorRef.current.systemInstruction = systemInstruction
-    }
+    translatorRef.current.systemInstruction = systemInstruction.trim()
+      ? systemInstruction.trim()
+      : buildDefaultSystemInstruction({ from: fromLanguage, to: toLanguage })
 
     try {
       setStreamOutput("")
@@ -361,38 +376,42 @@ export function TranslatorApplication() {
                     </div>
                   )}
 
+                  <Divider className="w-full" />
+
                   <div className='flex w-full gap-4'>
                     <Input
                       className='w-full md:w-6/12'
                       size='sm'
                       type="text"
                       label="From Language"
-                      placeholder="Auto"
+                      placeholder="Auto-detect"
                       autoComplete='on'
                       value={fromLanguage}
                       onValueChange={setFromLanguage}
+                      description="Optional; leave empty to detect from subtitles"
                     />
-                    <Input
-                      className='w-full md:w-6/12'
-                      size='sm'
-                      type="text"
-                      label="To Language"
-                      autoComplete='on'
-                      value={toLanguage}
-                      onValueChange={setToLanguage}
-                    />
+                    <div className='w-full md:w-6/12'>
+                      <LanguageCombobox
+                        label="To Language"
+                        value={toLanguage}
+                        onValueChange={setToLanguageValue}
+                        isDisabled={translatorRunningState}
+                      />
+                    </div>
                   </div>
 
                   <div className='w-full'>
                     <Textarea
-                      label="System Instruction"
-                      minRows={2}
-                      description={"Override preset system instruction"}
-                      placeholder={`Translate ${fromLanguage ? fromLanguage + " " : ""}to ${toLanguage}`}
+                      label="System instruction (optional)"
+                      minRows={3}
+                      description="Leave empty for the built-in learning-focused subtitle prompt"
+                      placeholder="Custom instructions override the default"
                       value={systemInstruction}
                       onValueChange={setSystemInstruction}
                     />
                   </div>
+
+                  <Divider className="w-full" />
 
                   <div className='flex flex-wrap md:flex-nowrap w-full gap-4'>
                     {useCloudApi && (
@@ -409,20 +428,17 @@ export function TranslatorApplication() {
                       </div>
                     )}
 
-                    <div className='w-full md:w-1/5 flex'>
+                    <div className='w-full md:w-2/5 flex gap-2'>
                       <Switch
                         size='sm'
                         isSelected={useStructuredMode}
                         onValueChange={setUseStructuredMode}
-                        isDisabled={!useCloudApi}
                       >
                       </Switch>
                       <div className="flex flex-col place-content-center gap-1">
                         <p className="text-small">Structured mode</p>
                         <p className="text-tiny text-default-400">
-                          {useCloudApi
-                            ? 'Recommended for OpenAI models'
-                            : 'Disabled for local Ollama (use plain mode)'}
+                          One JSON line per subtitle — best SRT alignment. Turn off if your model rejects JSON schema.
                         </p>
                       </div>
                     </div>
@@ -452,23 +468,32 @@ export function TranslatorApplication() {
                       />
                     </div>
 
-                    <div className='w-full md:w-1/5'>
-                      <Input
-                        size='sm'
-                        type="number"
-                        min="1"
-                        label="Rate Limit"
-                        value={rateLimit.toString()}
-                        onValueChange={(value) => setRateLimitValue(value)}
-                        autoComplete='on'
-                        endContent={
-                          <div className="pointer-events-none flex items-center">
-                            <span className="text-default-400 text-small">RPM</span>
-                          </div>
-                        }
-                      />
-                    </div>
+                    {useCloudApi && (
+                      <div className='w-full md:w-1/5'>
+                        <Input
+                          size='sm'
+                          type="number"
+                          min="1"
+                          label="Rate limit"
+                          value={rateLimit.toString()}
+                          onValueChange={(value) => setRateLimitValue(value)}
+                          autoComplete='on'
+                          description="Max API requests per minute (RPM)"
+                          endContent={
+                            <div className="pointer-events-none flex items-center">
+                              <span className="text-default-400 text-small">RPM</span>
+                            </div>
+                          }
+                        />
+                      </div>
+                    )}
                   </div>
+
+                  {!useCloudApi && (
+                    <p className="text-tiny text-default-400 w-full">
+                      Local Ollama: no rate limit control needed ({LOCAL_RATE_LIMIT_RPM} RPM cap applied internally so batches are not delayed).
+                    </p>
+                  )}
                 </div>
               </CardBody>
             </Card>
