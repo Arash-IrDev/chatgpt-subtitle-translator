@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build",
+    "build": "NEXT_STATIC_EXPORT=1 next build",
     "build:pages": "GITHUB_PAGES=true next build",
     "serve": "npx --yes serve@14 out -l 3000",
     "serve:pages": "npx --yes serve@14 chatgpt-subtitle-translator -l 3000",

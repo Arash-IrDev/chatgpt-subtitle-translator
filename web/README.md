@@ -20,6 +20,8 @@ npm run web:dev
 
 Open **http://localhost:3000** (no `/chatgpt-subtitle-translator` path in local builds).
 
+If styles look broken after a refresh, stop the dev server, run `rm -rf .next`, and start again (`npm run dev`). Do not use `output: export` during development — local `npm run build` sets `NEXT_STATIC_EXPORT=1` only for the static `out/` folder.
+
 ### Production build (static files)
 
 ```bash
